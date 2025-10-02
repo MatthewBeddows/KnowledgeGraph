@@ -396,7 +396,66 @@ class TimeSeriesKnowledgeGraph:
         fig.write_html(output_file)
         print(f"3D visualization saved to: {output_file}")
     
-    def _spatial_layout(self, subgraph):
+    def create_future_prediction_nodes(self, year=2024, plots=None):
+        """Create blank structure for future year prediction
+        
+        WARNING: This creates nodes without actual data. Predictions will be
+        based only on temporal patterns and graph structure, not real conditions.
+        """
+        
+        print(f"\nCreating blank prediction structure for {year}...")
+        
+        # Get existing plots if not specified
+        if plots is None:
+            field_nodes = [n for n, d in self.graph.nodes(data=True) 
+                          if d.get('type') == 'Field']
+            plots = [d.get('lookup_code') for n, d in self.graph.nodes(data=True) 
+                    if d.get('type') == 'Field' and d.get('lookup_code') is not None]
+        
+        print(f"  Creating nodes for {len(plots)} plots")
+        
+        # Create weekly timestamps for the year
+        dates = pd.date_range(f'{year}-01-01', f'{year}-12-31', freq='W')
+        print(f"  Creating {len(dates)} weekly timestamps")
+        
+        nodes_created = 0
+        for plot_code in plots:
+            field_id = f"Field_Plot_{int(plot_code)}"
+            
+            if field_id not in self.graph:
+                print(f"  Warning: {field_id} not in graph, skipping")
+                continue
+            
+            for date in dates:
+                ts_id = f"TS_{field_id}_{date.strftime('%Y%m%d_%H%M%S')}"
+                
+                # Create timestamp node (no target/yield value)
+                self.graph.add_node(ts_id,
+                                   type="Timestamp",
+                                   datetime=str(date),
+                                   year=date.year,
+                                   month=date.month,
+                                   day=date.day,
+                                   dayofweek=date.dayofweek,
+                                   dayofyear=date.dayofyear,
+                                   field=field_id,
+                                   is_future=True)  # Mark as future prediction
+                
+                self.graph.add_edge(field_id, ts_id, relationship="HAS_MEASUREMENT")
+                nodes_created += 1
+        
+        print(f"  ✓ Created {nodes_created} future timestamp nodes")
+        print(f"\n  NOTE: These nodes have NO actual yield data")
+        print(f"  Predictions will be based on:")
+        print(f"    - Temporal patterns (time of year)")
+        print(f"    - Graph structure (which plot)")
+        print(f"    - Historical patterns from similar periods")
+        print(f"  But will NOT account for:")
+        print(f"    - Actual {year} weather")
+        print(f"    - Real plant conditions")
+        print(f"    - Recent yield trends")
+        
+        return self.graph
         """Spatial layout with fields in circle"""
         pos = {}
         field_nodes = [n for n, d in subgraph.nodes(data=True) if d.get('type') == 'Field']
@@ -425,9 +484,10 @@ def main():
     # CONFIG
     input_file = 'full_dataset.csv'
     build_graph = True
-    create_visualizations = True
+    create_visualizations = False
     run_gnn = True
     test_year = 2023
+    forecast_weeks = 4  # NEW: Predict N weeks ahead
     
     # Create output directories
     os.makedirs('outputs', exist_ok=True)
@@ -437,7 +497,6 @@ def main():
     os.makedirs('outputs/gnn', exist_ok=True)
     
     kg = TimeSeriesKnowledgeGraph()
-    df_full = None
     
     if build_graph:
         print("\n[1/4] Loading data...")
@@ -446,19 +505,12 @@ def main():
         print(f"Date range: {df_full.index.min()} to {df_full.index.max()}")
         print(f"Years in data: {sorted(df_full.index.year.unique())}")
         
-        if run_gnn:
-            print(f"\n[2/4] Building FULL graph (all years)...")
-            print(f"  Graph will include {test_year} structure")
-            print(f"  But {test_year} labels will be MASKED during training")
-            kg.create_graph(df_full)
-            print(f"  ✓ Full graph built")
-            
-            with open('outputs/test_year.txt', 'w') as f:
-                f.write(str(test_year))
-            print(f"  ✓ Test year {test_year} saved")
-        else:
-            print(f"\n[2/4] Building graph (all data)...")
-            kg.create_graph(df_full)
+        # NEW: Build graph with ALL data (need test year features for rolling forecast)
+        print(f"\n[2/4] Building graph with ALL data...")
+        kg.create_graph(df_full)
+        
+        print(f"\nGraph includes years: {sorted(df_full.index.year.unique())}")
+        print(f"Test year {test_year} data IS in the graph (we need its features)")
         
         print("\n[3/4] Exporting...")
         kg.generate_debug_report('outputs/debug_report.txt')
@@ -474,29 +526,30 @@ def main():
         print("\n[4/4] Creating 3D visualizations...")
         kg.create_3d_visualization('outputs/visualizations/kg_3d_overview.html', 
                                    sample_timestamps=100)
-        kg.create_3d_visualization('outputs/visualizations/kg_3d_sample.html', 
-                                   filter_plots=[81, 53, 2, 74, 64], 
-                                   sample_timestamps=10)
     
     if run_gnn:
         try:
-            from gnn_predictor import run_gnn_prediction
+            from gnn_predictor import run_rolling_forecast
             print("\n" + "="*60)
-            print("TRAINING GNN MODEL")
+            print("RUNNING ROLLING FORECAST GNN")
             print("="*60)
-            predictor, results = run_gnn_prediction(kg, test_year=test_year)
+            
+            predictor, results, metrics = run_rolling_forecast(
+                kg,
+                forecast_weeks=forecast_weeks,
+                test_year=test_year
+            )
             
             print("\n" + "="*60)
             print("SUCCESS!")
             print("="*60)
-            print(f"\nAll outputs saved to 'outputs/' directory:")
-            print(f"  outputs/graphs/ - Saved knowledge graphs")
-            print(f"  outputs/visualizations/ - 2D and 3D visualizations")
-            print(f"  outputs/exports/ - JSON and Cypher exports")
-            print(f"  outputs/gnn/ - GNN models and predictions")
+            print(f"\nTest Set Results:")
+            print(f"  RMSE: {metrics['test']['rmse']:.4f}")
+            print(f"  MAE:  {metrics['test']['mae']:.4f}")
+            print(f"  R²:   {metrics['test']['r2']:.4f}")
             
-        except ImportError:
-            print("\nInstall PyTorch Geometric:")
+        except ImportError as e:
+            print("\nMissing dependency:")
             print("  pip install torch torch-geometric")
         except Exception as e:
             print(f"\nGNN failed: {e}")
@@ -505,7 +558,6 @@ def main():
     
     print("\nDONE!")
     return kg
-
 
 if __name__ == "__main__":
     main()
