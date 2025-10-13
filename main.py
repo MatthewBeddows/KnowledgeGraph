@@ -1,8 +1,3 @@
-"""
-COMPLETE FIXED PATTERN-BASED SEMANTIC KNOWLEDGE GRAPH BUILDER
-All original features preserved + fixes for classification and correlation issues
-"""
-
 import pandas as pd
 import networkx as nx
 import matplotlib.pyplot as plt
@@ -26,614 +21,10 @@ from sklearn.feature_selection import mutual_info_regression
 from sklearn.ensemble import RandomForestRegressor
 from scipy.stats import spearmanr
 
-
-@dataclass
-class VariableMetadata:
-    """Metadata for understanding what a variable represents"""
-    name: str
-    unit: Optional[str]
-    data_range: Tuple[float, float]
-    measurement_type: str
-    semantic_category: str
-    aliases: List[str]
-    physical_meaning: str
-    
-    # Pattern-based properties
-    statistical_fingerprint: Optional[Dict] = None
-    temporal_signature: Optional[Dict] = None
-    predictive_power: float = 0.0
-    behavior_cluster: int = -1
-
-
-class VariableOntology:
-    """FIXED: Defines the semantic hierarchy with better scoring"""
-    
-    def __init__(self):
-        self.ontology = {
-            'Temperature': {
-                'unit_patterns': ['celsius', 'c', 'fahrenheit', 'f', 'kelvin', 'k', 'temp', 'degree'],
-                'name_patterns': ['temp', 'temperature', 'thermal', 'heat', 'degrees', 'dewpoint'],
-                'typical_range': [-20, 50],
-                'subcategories': {
-                    'Air_Temperature': ['air', 'ambient', 'atmospheric', 'era5'],
-                    'Soil_Temperature': ['soil', 'ground'],
-                    'Canopy_Temperature': ['canopy', 'leaf', 'plant']
-                }
-            },
-            'Moisture': {
-                'unit_patterns': ['%', 'percent', 'vwc', 'm3/m3', 'volumetric'],
-                'name_patterns': ['moisture', 'water', 'humidity', 'wetness'],
-                'typical_range': [0, 100],
-                'subcategories': {
-                    'Soil_Moisture': ['soil', 'ground'],
-                    'Air_Humidity': ['air', 'relative', 'rh'],
-                    'Leaf_Wetness': ['leaf', 'canopy']
-                }
-            },
-            'Precipitation': {
-                'unit_patterns': ['mm', 'inch', 'in', 'precipitation', 'rainfall'],
-                'name_patterns': ['rain', 'rainfall', 'precipitation', 'precip', 'total_precipitation'],
-                'typical_range': [0, 200],
-                'subcategories': {
-                    'Rainfall': ['rain'],
-                    'Irrigation': ['irrigation', 'irrigated', 'watering']
-                }
-            },
-            'Wind': {
-                'unit_patterns': ['m/s', 'km/h', 'mph', 'component'],
-                'name_patterns': ['wind', 'gust', 'breeze', 'wind_u', 'wind_v'],
-                'typical_range': [-50, 50],
-                'subcategories': {
-                    'Wind_Speed': ['speed', 'velocity'],
-                    'Wind_Component': ['component', 'u_component', 'v_component']
-                }
-            },
-            'Pressure': {
-                'unit_patterns': ['pa', 'hpa', 'mbar', 'pressure'],
-                'name_patterns': ['pressure', 'atmospheric', 'surface_pressure'],
-                'typical_range': [900, 1100],
-                'subcategories': {
-                    'Surface_Pressure': ['surface', 'atmospheric']
-                }
-            },
-            'Nutrient': {
-                'unit_patterns': ['ppm', 'mg/kg', 'mg/l', 'nutrient'],
-                'name_patterns': ['nitrogen', 'phosphorus', 'potassium', 'nutrient', 'fertilizer', 
-                                 'npk', 'nitrate', 'phosphate', 'potash'],
-                'typical_range': [0, 500],
-                'subcategories': {
-                    'Nitrogen': ['nitrogen', 'nitrate', 'nh4', 'no3'],
-                    'Phosphorus': ['phosphorus', 'phosphate'],
-                    'Potassium': ['potassium', 'potash']
-                }
-            },
-            'Vegetation_Index': {
-                'unit_patterns': ['ndvi', 'evi', 'index', 'ratio'],
-                'name_patterns': ['ndvi', 'evi', 'savi', 'vegetation', 'greenness', 'vigor'],
-                'typical_range': [-1, 1],
-                'subcategories': {
-                    'NDVI': ['ndvi'],
-                    'EVI': ['evi'],
-                    'Other_Index': ['savi', 'gndvi']
-                }
-            },
-            'Yield': {
-                'unit_patterns': ['kg/ha', 'ton/ha', 'bu/acre', 'kg', 'ton', 'yield'],
-                'name_patterns': ['yield', 'production', 'harvest', 'output', 'biomass', 'cumulativeyield'],
-                'typical_range': [0, 20000],
-                'subcategories': {
-                    'Final_Yield': ['final', 'harvest', 'total'],
-                    'Cumulative_Yield': ['cumulative', 'cum']
-                }
-            },
-            'Growth_Metric': {
-                'unit_patterns': ['cm', 'm', 'height', 'area', 'count', 'age'],
-                'name_patterns': ['height', 'growth', 'biomass', 'lai', 'area', 'stand', 'age', 'plantage'],
-                'typical_range': [0, 300],
-                'subcategories': {
-                    'Height': ['height', 'tall'],
-                    'LAI': ['lai', 'leaf_area'],
-                    'Age': ['age', 'plantage'],
-                    'Biomass': ['biomass', 'weight', 'mass']
-                }
-            },
-            'Location_Property': {
-                'unit_patterns': ['acre', 'ha', 'hectare'],
-                'name_patterns': ['acres', 'area', 'size'],
-                'typical_range': [0, 1000],
-                'subcategories': {
-                    'Area': ['acres', 'area', 'hectare']
-                }
-            },
-            'Encoded_Variable': {
-                'unit_patterns': ['encoded', 'id'],
-                'name_patterns': ['encoded', 'variety', 'tunnel', 'farm', 'lookup'],
-                'typical_range': [0, 1000],
-                'subcategories': {
-                    'Categorical': ['variety', 'tunnel', 'type'],
-                    'Identifier': ['farm', 'lookup', 'id']
-                }
-            },
-            'Shifted_Variable': {
-                'unit_patterns': [],
-                'name_patterns': ['shifted'],
-                'typical_range': None,
-                'subcategories': {
-                    'Lagged': ['shifted', 'lag']
-                }
-            }
-        }
-    
-    def classify_variable(self, var_name: str, unit: Optional[str] = None, 
-                         data_sample: Optional[np.ndarray] = None) -> Tuple[str, str, float]:
-        """FIXED: Classify a variable with improved scoring"""
-        var_name_lower = var_name.lower()
-        unit_lower = unit.lower() if unit else ""
-        
-        scores = {}
-        
-        for category, properties in self.ontology.items():
-            score = 0.0
-            matched_subcategory = None
-            
-            # FIXED: Check name patterns with higher weight
-            name_match_count = 0
-            for pattern in properties['name_patterns']:
-                if pattern in var_name_lower:
-                    name_match_count += 1
-            
-            if name_match_count > 0:
-                score += 3.0 * name_match_count  # FIXED: Increased from 0.5
-            
-            # Check unit patterns
-            if unit_lower:
-                for pattern in properties['unit_patterns']:
-                    if pattern in unit_lower:
-                        score += 2.0  # FIXED: Increased from 0.3
-                        break
-            
-            # Check data range if available
-            if data_sample is not None and len(data_sample) > 0 and properties['typical_range']:
-                data_min, data_max = np.nanmin(data_sample), np.nanmax(data_sample)
-                expected_min, expected_max = properties['typical_range']
-                
-                # More lenient range checking
-                if expected_min * 0.5 <= data_min and data_max <= expected_max * 2:
-                    score += 0.5  # FIXED: Increased from 0.2
-            
-            # Check subcategories
-            for subcat, subcat_patterns in properties['subcategories'].items():
-                for pattern in subcat_patterns:
-                    if pattern in var_name_lower:
-                        score += 1.0  # FIXED: Increased from 0.3
-                        matched_subcategory = subcat
-                        break
-            
-            if score > 0:
-                scores[category] = (score, matched_subcategory or 'General')
-        
-        if not scores:
-            return ('Unknown', 'Unknown', 0.0)
-        
-        best_category = max(scores.items(), key=lambda x: x[1][0])
-        category_name = best_category[0]
-        confidence = min(best_category[1][0] / 10.0, 1.0)  # Normalize to 0-1
-        subcategory = best_category[1][1]
-        
-        return (category_name, subcategory, confidence)
-    
-    def find_similar_variables(self, target_var_metadata: VariableMetadata, 
-                              known_variables: List[VariableMetadata]) -> List[Tuple[VariableMetadata, float]]:
-        """Find variables similar to target based on semantic meaning"""
-        similarities = []
-        
-        for known_var in known_variables:
-            similarity = 0.0
-            
-            if known_var.semantic_category == target_var_metadata.semantic_category:
-                similarity += 0.5
-            
-            if known_var.measurement_type == target_var_metadata.measurement_type:
-                similarity += 0.2
-            
-            if self._units_compatible(known_var.unit, target_var_metadata.unit):
-                similarity += 0.2
-            
-            range_overlap = self._calculate_range_overlap(
-                known_var.data_range, target_var_metadata.data_range
-            )
-            similarity += range_overlap * 0.1
-            
-            if similarity > 0.3:
-                similarities.append((known_var, similarity))
-        
-        return sorted(similarities, key=lambda x: x[1], reverse=True)
-    
-    def _units_compatible(self, unit1: Optional[str], unit2: Optional[str]) -> bool:
-        """Check if two units are compatible"""
-        if not unit1 or not unit2:
-            return False
-        
-        unit_families = [
-            ['celsius', 'c', 'fahrenheit', 'f', 'kelvin', 'k'],
-            ['mm', 'inch', 'in', 'cm'],
-            ['%', 'percent', 'pct'],
-            ['kg/ha', 'ton/ha', 'bu/acre'],
-            ['ppm', 'mg/kg', 'mg/l']
-        ]
-        
-        unit1_lower = unit1.lower()
-        unit2_lower = unit2.lower()
-        
-        for family in unit_families:
-            if any(u in unit1_lower for u in family) and any(u in unit2_lower for u in family):
-                return True
-        
-        return unit1_lower == unit2_lower
-    
-    def _calculate_range_overlap(self, range1: Tuple[float, float], 
-                                 range2: Tuple[float, float]) -> float:
-        """Calculate overlap between two ranges (0 to 1)"""
-        min1, max1 = range1
-        min2, max2 = range2
-        
-        overlap_start = max(min1, min2)
-        overlap_end = min(max1, max2)
-        
-        if overlap_start >= overlap_end:
-            return 0.0
-        
-        overlap = overlap_end - overlap_start
-        total_span = max(max1, max2) - min(min1, min2)
-        
-        return overlap / total_span if total_span > 0 else 0.0
-
-
-class PatternBasedAnalyzer:
-    """FIXED: Analyze variables with better handling of skewed targets"""
-    
-    def __init__(self):
-        self.fingerprints = {}
-        
-    def create_variable_fingerprint(self, data: np.ndarray, name: str = "") -> Dict:
-        """Create comprehensive statistical signature of a variable"""
-        clean_data = data[~np.isnan(data)]
-        
-        if len(clean_data) < 3:
-            return {}
-        
-        fingerprint = {
-            'name': name,
-            # Basic statistics
-            'mean': float(np.mean(clean_data)),
-            'std': float(np.std(clean_data)),
-            'min': float(np.min(clean_data)),
-            'max': float(np.max(clean_data)),
-            'range': float(np.max(clean_data) - np.min(clean_data)),
-            'median': float(np.median(clean_data)),
-            
-            # Distribution shape
-            'skewness': float(stats.skew(clean_data)),
-            'kurtosis': float(stats.kurtosis(clean_data)),
-            
-            # Data properties
-            'num_zeros': int(np.sum(clean_data == 0)),
-            'num_negatives': int(np.sum(clean_data < 0)),
-            'coefficient_of_variation': float(np.std(clean_data) / (np.mean(clean_data) + 1e-10)),
-            
-            # Percentiles
-            'p25': float(np.percentile(clean_data, 25)),
-            'p75': float(np.percentile(clean_data, 75)),
-            'iqr': float(np.percentile(clean_data, 75) - np.percentile(clean_data, 25)),
-            
-            # Temporal properties
-            'autocorrelation_lag1': self._safe_autocorr(clean_data, 1),
-            'autocorrelation_lag7': self._safe_autocorr(clean_data, 7),
-            'trend_strength': self._calculate_trend(clean_data),
-        }
-        
-        return fingerprint
-    
-    def _safe_autocorr(self, data: np.ndarray, lag: int) -> float:
-        """Calculate autocorrelation safely"""
-        if len(data) <= lag:
-            return 0.0
-        try:
-            return float(np.corrcoef(data[:-lag], data[lag:])[0, 1])
-        except:
-            return 0.0
-    
-    def _calculate_trend(self, data: np.ndarray) -> float:
-        """Calculate trend strength"""
-        if len(data) < 3:
-            return 0.0
-        x = np.arange(len(data))
-        try:
-            slope, _, r_value, _, _ = stats.linregress(x, data)
-            return float(r_value ** 2)  # R-squared as trend strength
-        except:
-            return 0.0
-    
-    def compare_fingerprints(self, fp1: Dict, fp2: Dict) -> float:
-        """Compare two statistical fingerprints (0 to 1 similarity)"""
-        if not fp1 or not fp2:
-            return 0.0
-        
-        similarity = 0.0
-        weights = {
-            'range': 0.15,
-            'skewness': 0.10,
-            'coefficient_of_variation': 0.15,
-            'autocorrelation_lag1': 0.15,
-            'trend_strength': 0.10,
-            'sign_pattern': 0.10,
-            'distribution_shape': 0.15,
-            'scale': 0.10
-        }
-        
-        # Range similarity
-        range_diff = abs(fp1['range'] - fp2['range']) / max(fp1['range'], fp2['range'], 1)
-        similarity += (1 - min(range_diff, 1)) * weights['range']
-        
-        # Skewness similarity
-        skew_diff = abs(fp1['skewness'] - fp2['skewness'])
-        similarity += (1 - min(skew_diff / 3, 1)) * weights['skewness']
-        
-        # CV similarity
-        cv_diff = abs(fp1['coefficient_of_variation'] - fp2['coefficient_of_variation'])
-        similarity += (1 - min(cv_diff, 1)) * weights['coefficient_of_variation']
-        
-        # Autocorrelation similarity
-        autocorr_diff = abs(fp1['autocorrelation_lag1'] - fp2['autocorrelation_lag1'])
-        similarity += (1 - autocorr_diff) * weights['autocorrelation_lag1']
-        
-        # Trend similarity
-        trend_diff = abs(fp1['trend_strength'] - fp2['trend_strength'])
-        similarity += (1 - trend_diff) * weights['trend_strength']
-        
-        # Sign pattern
-        both_positive = (fp1['num_negatives'] == 0) and (fp2['num_negatives'] == 0)
-        both_mixed = (fp1['num_negatives'] > 0) and (fp2['num_negatives'] > 0)
-        if both_positive or both_mixed:
-            similarity += weights['sign_pattern']
-        
-        # Distribution shape (kurtosis)
-        kurt_diff = abs(fp1['kurtosis'] - fp2['kurtosis'])
-        similarity += (1 - min(kurt_diff / 5, 1)) * weights['distribution_shape']
-        
-        # Scale similarity (order of magnitude)
-        scale_ratio = max(fp1['mean'], fp2['mean']) / (min(fp1['mean'], fp2['mean']) + 1e-10)
-        if scale_ratio < 10:  # Within one order of magnitude
-            similarity += weights['scale'] * (1 - np.log10(scale_ratio) / 1)
-        
-        return similarity
-    
-    def discover_predictive_variables(self, df: pd.DataFrame, target: str, 
-                                     min_importance: float = 0.05) -> List[Dict]:
-        """FIXED: Find predictive variables using non-zero targets"""
-        predictive_vars = []
-        numeric_cols = df.select_dtypes(include=[np.number]).columns
-        feature_cols = [c for c in numeric_cols if c != target]
-        
-        if len(feature_cols) == 0 or target not in df.columns:
-            return []
-        
-        # FIXED: Filter to non-zero targets for skewed yield data
-        target_nonzero = df[target] > 0
-        n_nonzero = target_nonzero.sum()
-        
-        if n_nonzero < 10:
-            print(f"  ⚠️  Warning: Only {n_nonzero} non-zero target values")
-            # Fall back to all data if too few non-zero
-            df_analysis = df
-        else:
-            df_analysis = df[target_nonzero]
-        
-        # Prepare data
-        X = df_analysis[feature_cols].fillna(df_analysis[feature_cols].median())
-        y = df_analysis[target].fillna(df_analysis[target].median())
-        
-        if len(X) < 10:
-            return []
-        
-        # Calculate mutual information
-        try:
-            mi_scores = mutual_info_regression(X, y, random_state=42)
-        except:
-            mi_scores = np.zeros(len(feature_cols))
-        
-        for i, col in enumerate(feature_cols):
-            try:
-                col_data = df_analysis[col].fillna(df_analysis[col].median())
-                target_data = df_analysis[target].fillna(df_analysis[target].median())
-                
-                # Skip if no variance
-                if col_data.std() == 0:
-                    continue
-                
-                # Multiple correlation measures
-                mi = mi_scores[i]
-                
-                # FIXED: Use Spearman for skewed data
-                spearman_corr, spearman_p = spearmanr(col_data, target_data)
-                if np.isnan(spearman_corr):
-                    spearman_corr = 0
-                
-                pearson_corr = np.corrcoef(col_data, target_data)[0, 1]
-                if np.isnan(pearson_corr):
-                    pearson_corr = 0
-                
-                # FIXED: Weight Spearman more for skewed data
-                importance = mi * 0.4 + abs(spearman_corr) * 0.4 + abs(pearson_corr) * 0.2
-                
-                if importance > min_importance:
-                    rel_type = self._classify_relationship_type(pearson_corr, spearman_corr, mi)
-                    
-                    predictive_vars.append({
-                        'variable': col,
-                        'mutual_info': float(mi),
-                        'spearman': float(spearman_corr),
-                        'spearman_p': float(spearman_p),
-                        'pearson': float(pearson_corr),
-                        'combined_importance': float(importance),
-                        'relationship_type': rel_type,
-                        'n_samples': len(col_data)
-                    })
-            except:
-                continue
-        
-        return sorted(predictive_vars, key=lambda x: x['combined_importance'], reverse=True)
-    
-    def _classify_relationship_type(self, pearson: float, spearman: float, mi: float) -> str:
-        """Determine type of relationship"""
-        if abs(pearson) > 0.7 and abs(spearman) > 0.7:
-            return "strong_linear"
-        elif abs(spearman) > 0.7 and abs(pearson) < 0.5:
-            return "strong_monotonic_nonlinear"
-        elif mi > 0.3 and abs(pearson) < 0.3:
-            return "complex_nonlinear"
-        elif abs(spearman) > 0.3 or mi > 0.2:
-            return "moderate_dependency"
-        else:
-            return "weak_relationship"
-    
-    def cluster_variables_by_behavior(self, df: pd.DataFrame, target: str, 
-                                     eps: float = 0.5) -> Dict[int, List[str]]:
-        """Group variables by how they behave together"""
-        numeric_cols = df.select_dtypes(include=[np.number]).columns
-        feature_cols = [c for c in numeric_cols if c != target]
-        
-        if len(feature_cols) < 2:
-            return {0: list(feature_cols)}
-        
-        # Create correlation matrix
-        corr_matrix = df[feature_cols].corr().fillna(0).values
-        
-        # Create feature vectors for clustering
-        feature_vectors = []
-        for i, col in enumerate(feature_cols):
-            corr_profile = corr_matrix[i, :]
-            
-            # Add target correlation if available
-            if target in df.columns:
-                try:
-                    target_corr = np.corrcoef(
-                        df[col].fillna(0), 
-                        df[target].fillna(0)
-                    )[0, 1]
-                    if np.isnan(target_corr):
-                        target_corr = 0
-                except:
-                    target_corr = 0
-            else:
-                target_corr = 0
-            
-            # Statistical properties
-            stats_vec = [
-                df[col].mean() / (df[col].std() + 1e-10),
-                df[col].skew() if not np.isnan(df[col].skew()) else 0,
-                df[col].kurt() if not np.isnan(df[col].kurt()) else 0
-            ]
-            
-            feature_vectors.append(np.concatenate([corr_profile, [target_corr], stats_vec]))
-        
-        # Cluster
-        scaler = StandardScaler()
-        scaled_vectors = scaler.fit_transform(feature_vectors)
-        
-        clustering = DBSCAN(eps=eps, min_samples=2)
-        clusters = clustering.fit_predict(scaled_vectors)
-        
-        # Organize results
-        variable_clusters = {}
-        for i, col in enumerate(feature_cols):
-            cluster_id = int(clusters[i])
-            if cluster_id not in variable_clusters:
-                variable_clusters[cluster_id] = []
-            variable_clusters[cluster_id].append(col)
-        
-        return variable_clusters
-    
-    def discover_temporal_predictors(self, df: pd.DataFrame, target: str,
-                                    max_lag: int = 8, min_corr: float = 0.15) -> List[Dict]:
-        """FIXED: Find time-lagged relationships with non-zero targets"""
-        numeric_cols = df.select_dtypes(include=[np.number]).columns
-        feature_cols = [c for c in numeric_cols if c != target]
-        
-        # FIXED: Use non-zero targets
-        target_nonzero = df[target] > 0
-        
-        temporal_patterns = []
-        
-        for col in feature_cols:
-            best_lag = 0
-            best_corr = 0
-            lag_profile = []
-            
-            for lag in range(0, max_lag + 1):
-                feature_lagged = df[col].shift(lag)
-                
-                # Apply non-zero mask
-                valid_mask = feature_lagged.notna() & df[target].notna() & target_nonzero
-                if valid_mask.sum() < 10:
-                    continue
-                
-                try:
-                    # FIXED: Use Spearman
-                    corr, _ = spearmanr(
-                        feature_lagged[valid_mask].values,
-                        df[target][valid_mask].values
-                    )
-                    
-                    if np.isnan(corr):
-                        corr = 0
-                except:
-                    corr = 0
-                
-                lag_profile.append({'lag': lag, 'correlation': float(corr)})
-                
-                if abs(corr) > abs(best_corr):
-                    best_corr = corr
-                    best_lag = lag
-            
-            if abs(best_corr) > min_corr:
-                temporal_patterns.append({
-                    'variable': col,
-                    'best_lag': best_lag,
-                    'best_correlation': float(best_corr),
-                    'lag_profile': lag_profile,
-                    'prediction_strength': abs(best_corr),
-                    'direction': 'positive' if best_corr > 0 else 'negative'
-                })
-        
-        return sorted(temporal_patterns, key=lambda x: x['prediction_strength'], reverse=True)
-    
-    def compute_feature_importance(self, df: pd.DataFrame, target: str) -> Dict[str, float]:
-        """Use Random Forest to get feature importance"""
-        numeric_cols = df.select_dtypes(include=[np.number]).columns
-        feature_cols = [c for c in numeric_cols if c != target]
-        
-        if len(feature_cols) == 0 or target not in df.columns:
-            return {}
-        
-        X = df[feature_cols].fillna(df[feature_cols].median())
-        y = df[target].fillna(df[target].median())
-        
-        if len(X) < 10:
-            return {}
-        
-        try:
-            model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
-            model.fit(X, y)
-            
-            importance = {}
-            for col, imp in zip(feature_cols, model.feature_importances_):
-                importance[col] = float(imp)
-            
-            return importance
-        except:
-            return {}
-
+#other files
+from variable_ontology import VariableOntology, VariableMetadata
+from pattern_analyzer import PatternBasedAnalyzer
+from gnn_single_pred import run_single_date_forecast
 
 class SemanticKnowledgeGraph:
     """COMPLETE knowledge graph with all features + fixes"""
@@ -1804,46 +1195,71 @@ class SemanticKnowledgeGraph:
         print(f"3D visualization saved to: {output_file}")
 
 
+"""
+COMPLETE MAIN FUNCTION
+Replace your existing main() function with this
+"""
+
 def main():
     print("="*70)
     print("COMPLETE FIXED SEMANTIC KNOWLEDGE GRAPH BUILDER")
+    print("WITH INCREMENTAL ROLLING FORECAST")
     print("="*70)
     
-    # CONFIG
-    input_file = 'full_dataset.csv'
+    # ==================== CONFIGURATION ====================
+    # Data files
+    train_file = 'AngusTrain.csv'      # Training data for knowledge graph
+    test_file = 'AngusTest.csv'        # Test data (added incrementally)
     target_variable = 'target'
+    
+    # Knowledge Graph Building
     build_graph = True
     learn_relationships = True
     perform_pattern_analysis = True
-    create_visualizations = True
-    test_transfer_learning = True
+    create_visualizations = False  # Set to False for faster runs
+    test_transfer_learning = False  # Set to False for faster runs
+    
+    # Incremental Rolling Forecast
+    run_incremental_forecast = True  # Set to True to run incremental forecast
+    forecast_config = {
+        'forecast_weeks': 4,           # Predict 4 weeks ahead
+        'target_crop': None,           # None = all crops, or specify: 'Tomato', 'Strawberry'
+        'use_semantic_filtering': True, # Use KG to filter relevant features
+        'use_attention': True,         # Use Graph Attention Networks (GAT)
+        'epochs_per_retrain': 100      # Training epochs each week (100-200 recommended)
+    }
+    # ======================================================
     
     # Create output directories
     os.makedirs('outputs', exist_ok=True)
     os.makedirs('outputs/graphs', exist_ok=True)
     os.makedirs('outputs/visualizations', exist_ok=True)
     os.makedirs('outputs/exports', exist_ok=True)
+    os.makedirs('outputs/gnn', exist_ok=True)
+    os.makedirs('outputs/gnn/plots', exist_ok=True)
     
     # Initialize semantic knowledge graph
     kg = SemanticKnowledgeGraph()
     
     if build_graph:
-        print("\n[STEP 1] Loading data...")
-        df_full = kg.load_data(input_file)
-        print(f"Loaded {len(df_full)} rows")
-        print(f"Columns: {list(df_full.columns)}")
-        print(f"Date range: {df_full.index.min()} to {df_full.index.max()}")
+        print("\n[STEP 1] Loading training data...")
+        # Load training data only for initial KG
+        df_train = kg.load_data(train_file)
+        print(f"Loaded {len(df_train)} training rows")
+        print(f"Columns: {list(df_train.columns)}")
+        print(f"Date range: {df_train.index.min()} to {df_train.index.max()}")
         
-        print("\n[STEP 2] Building semantic graph...")
-        kg.create_graph(df_full)
+        print("\n[STEP 2] Building semantic graph from training data...")
+        kg.create_graph(df_train)
         
         if perform_pattern_analysis:
             print("\n[STEP 3] Performing pattern analysis...")
-            kg.perform_pattern_analysis(df_full, target_variable)
+            kg.perform_pattern_analysis(df_train, target_variable)
         
         if learn_relationships:
             print("\n[STEP 4] Learning variable relationships...")
-            kg.learn_variable_relationships(df_full, target_var=target_variable, min_correlation=0.15)
+            kg.learn_variable_relationships(df_train, target_var=target_variable, 
+                                           min_correlation=0.15)
         
         print("\n[STEP 5] Exporting results...")
         kg.export_variable_registry('outputs/variable_registry.json')
@@ -1884,23 +1300,170 @@ def main():
         simulated_ndvi = np.random.uniform(0.2, 0.9, 100)
         kg.find_transferable_knowledge("mystery_sensor_042", new_var_data=simulated_ndvi)
     
+    # ==================== INCREMENTAL ROLLING FORECAST ====================
+    if run_incremental_forecast:
+        print("\n" + "="*70)
+        print("[STEP 8] RUNNING INCREMENTAL ROLLING FORECAST")
+        print("="*70)
+        print("\n🔄 This simulates real-world deployment:")
+        print("  1. Start with training data (AngusTrain.csv)")
+        print("  2. Each week:")
+        print("     ├─ Add new week from test data (AngusTest.csv)")
+        print("     ├─ Rebuild knowledge graph with all data seen so far")
+        print("     ├─ Retrain GNN model")
+        print("     ├─ Predict 4 weeks ahead for all fields")
+        print("     └─ Store predictions")
+        print("  3. Evaluate all predictions")
+        
+        try:
+            # Import the incremental forecast module
+            print("\n📦 Importing incremental forecast module...")
+            from gnn_predictor import run_incremental_rolling_forecast
+            
+            print(f"\n⚙️  Configuration:")
+            print(f"  Training file: {train_file}")
+            print(f"  Test file: {test_file}")
+            print(f"  Forecast horizon: {forecast_config['forecast_weeks']} weeks ahead")
+            print(f"  Target crop: {forecast_config['target_crop'] or 'All crops'}")
+            print(f"  Semantic filtering: {forecast_config['use_semantic_filtering']}")
+            print(f"  Architecture: {'GAT (attention)' if forecast_config['use_attention'] else 'GCN'}")
+            print(f"  Epochs per retrain: {forecast_config['epochs_per_retrain']}")
+            
+            # # Run incremental forecast
+            # print("\n🚀 Starting incremental rolling forecast...")
+            # gnn_predictor, gnn_results, gnn_metrics = run_incremental_rolling_forecast(
+            #     kg,
+            #     train_csv=train_file,
+            #     test_csv=test_file,
+            #     forecast_weeks=forecast_config['forecast_weeks'],
+            #     target_crop=forecast_config['target_crop'],
+            #     use_semantic_filtering=forecast_config['use_semantic_filtering'],
+            #     use_attention=forecast_config['use_attention'],
+            #     epochs_per_retrain=forecast_config['epochs_per_retrain']
+            # )
+
+            # Run single forecast
+            print("\n🚀 Starting single  forecast...")
+            gnn_predictor, gnn_results, gnn_metrics = run_single_date_forecast(
+                kg,
+                train_csv='AngusTrain.csv',
+                test_csv='AngusTest.csv',
+                cutoff_date='2023-05-01',  # Only use data before this date
+                only_predict_fields_with_actuals=True,
+                forecast_weeks=4,          
+                epochs=200
+            ) 
+
+
+            
+            print("\n" + "="*70)
+            print("✓ INCREMENTAL ROLLING FORECAST COMPLETE!")
+            print("="*70)
+            
+            # Display results
+            if gnn_metrics['r2'] is not None:
+                print(f"\n📊 Overall Performance (on predictions with actual values):")
+                print(f"  {'Metric':<20} {'Value':>10}")
+                print(f"  {'-'*20} {'-'*10}")
+                print(f"  {'R² Score':<20} {gnn_metrics['r2']:>10.4f}")
+                print(f"  {'RMSE':<20} {gnn_metrics['rmse']:>10.4f}")
+                print(f"  {'MAE':<20} {gnn_metrics['mae']:>10.4f}")
+            else:
+                print(f"\n⚠️  No actual values available for evaluation")
+            
+            print(f"\n📈 Prediction Summary:")
+            print(f"  Total predictions made: {gnn_metrics['n_predictions']}")
+            print(f"  Predictions with actuals: {gnn_metrics['n_with_actuals']}")
+            if gnn_metrics['n_predictions'] > 0:
+                coverage = (gnn_metrics['n_with_actuals'] / gnn_metrics['n_predictions']) * 100
+                print(f"  Coverage: {coverage:.1f}%")
+            
+            print(f"\n💾 Output Files:")
+            print(f"  📄 Results CSV: outputs/gnn/incremental_rolling_forecast_results.csv")
+            print(f"  📊 Plots: outputs/gnn/plots/")
+            print(f"     ├─ incremental_forecast_performance.png")
+            print(f"     └─ predictions_over_time.png")
+            
+            # Show sample predictions
+            if len(gnn_results) > 0:
+                print(f"\n📋 Sample Predictions (first 10):")
+                print("-" * 70)
+                sample_cols = ['prediction_date', 'target_date', 'field_code', 
+                              'predicted', 'actual', 'weeks_ahead']
+                available_cols = [col for col in sample_cols if col in gnn_results.columns]
+                print(gnn_results[available_cols].head(10).to_string(index=False))
+                
+                # Show statistics by field
+                if 'field_code' in gnn_results.columns and len(gnn_results) > 0:
+                    print(f"\n📍 Predictions by Field:")
+                    print("-" * 70)
+                    field_stats = gnn_results.groupby('field_code').agg({
+                        'predicted': ['count', 'mean'],
+                        'actual': lambda x: x.notna().sum()
+                    }).round(2)
+                    field_stats.columns = ['N_Predictions', 'Avg_Predicted', 'N_Actuals']
+                    print(field_stats.head(10).to_string())
+            
+        except ImportError as e:
+            print("\n❌ ERROR: Incremental GNN module not found!")
+            print(f"   {e}")
+            print("\n📝 To fix this:")
+            print("   1. Save the incremental_rolling_forecast_gnn.py file")
+            print("   2. Make sure it's in the same directory as this script")
+            print("   3. Re-run this script")
+        except FileNotFoundError as e:
+            print(f"\n❌ ERROR: Data file not found!")
+            print(f"   {e}")
+            print("\n📝 To fix this:")
+            print(f"   1. Make sure {train_file} exists")
+            print(f"   2. Make sure {test_file} exists")
+            print("   3. Check file paths are correct")
+        except Exception as e:
+            print(f"\n❌ ERROR: Incremental forecast failed!")
+            print(f"   {e}")
+            print("\n📝 Details:")
+            import traceback
+            traceback.print_exc()
+            print("\nNote: Knowledge graph was built successfully,")
+            print("      but the incremental forecast encountered an error.")
+    # ======================================================================
+    
     print("\n" + "="*70)
-    print("COMPLETE!")
+    print("🎉 COMPLETE!")
     print("="*70)
-    print("\nKey Fixes Applied:")
-    print("  ✓ Fixed semantic classification (improved scoring weights)")
-    print("  ✓ Use Spearman correlation for skewed data")
-    print("  ✓ Analyze only non-zero target values")
+    
+    print("\n✅ Key Features Applied:")
+    print("  ✓ Fixed semantic classification (improved scoring)")
+    print("  ✓ Spearman correlation for skewed data")
+    print("  ✓ Non-zero target analysis")
     print("  ✓ Lower correlation thresholds (0.05-0.15)")
     print("  ✓ Better handling of shifted/lagged variables")
-    print("  ✓ ALL original features preserved")
-    print("\nGenerated files:")
-    print("  - outputs/variable_registry.json")
-    print("  - outputs/variable_relationships.json")
-    print("  - outputs/pattern_analysis.json")
-    print("  - outputs/comprehensive_report.txt")
-    print("  - outputs/graphs/semantic_knowledge_graph.pkl")
-    print("  - outputs/visualizations/ (2D and 3D)")
+    if run_incremental_forecast:
+        print("  ✓ Incremental rolling forecast (week-by-week)")
+        print("  ✓ Real-world deployment simulation")
+    
+    print("\n📂 Generated Files:")
+    print("  Knowledge Graph:")
+    print("    ├─ outputs/variable_registry.json")
+    print("    ├─ outputs/variable_relationships.json")
+    print("    ├─ outputs/pattern_analysis.json")
+    print("    ├─ outputs/comprehensive_report.txt")
+    print("    ├─ outputs/graphs/semantic_knowledge_graph.pkl")
+    print("    └─ outputs/exports/kg_sample.json")
+    
+    if create_visualizations:
+        print("  Visualizations:")
+        print("    ├─ outputs/visualizations/semantic_kg_2d.png")
+        print("    └─ outputs/visualizations/semantic_kg_3d.html")
+    
+    if run_incremental_forecast:
+        print("  Incremental Forecast:")
+        print("    ├─ outputs/gnn/incremental_rolling_forecast_results.csv")
+        print("    └─ outputs/gnn/plots/")
+        print("        ├─ incremental_forecast_performance.png")
+        print("        └─ predictions_over_time.png")
+    
+    print("\n" + "="*70)
     
     return kg
 
